@@ -99,9 +99,10 @@ if not RENDER_EXTERNAL_HOSTNAME:
 WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}{WEBHOOK_PATH}"
 
 # ======================== Bot sozlamalari ========================
-BOT_USERNAME = "@R4VEN_kino_bot"
-CHANNEL_USERNAME = "@R4VEN_kino"
-CHANNEL_URL = "https://t.me/R4VEN_kino"
+BOT_USERNAME = "Kinolarolami7bot"            # ✅ @ belgisisiz
+CHANNEL_USERNAME = "@kinolar_olami_i7"
+CHANNEL_URL = "https://t.me/kinolar_olami_i7"
+INSTAGRAM_URL = "https://www.instagram.com/kino_sevarlar"
 
 
 # ======================== SELF-PING ========================
@@ -190,7 +191,7 @@ async def send_ad(bot, chat_id):
 # ======================== URL YORDAMCHI FUNKSIYA ========================
 def build_channel_url(sub_type: str, identifier: str):
     """
-    Har xil formatdagi identifier'dan to'g'ri Telegram URL yasaydi.
+    Har xil formatdagi identifier'dan to'g'ri URL yasaydi.
     Noto'g'ri bo'lsa None qaytaradi.
     """
     if not identifier:
@@ -235,7 +236,7 @@ async def check_telegram_membership(bot, user_id, sub_data):
     """
     True  → foydalanuvchi a'zo
     False → a'zo emas
-    None  → tekshirib bo'lmadi (kanal topilmadi / bot admin emas)
+    None  → tekshirib bo'lmadi (kanal topilmadi / bot admin emas / member list yopiq)
     """
     try:
         chat_id = None
@@ -253,7 +254,11 @@ async def check_telegram_membership(bot, user_id, sub_data):
                         chat = await bot.get_chat(identifier)
                         chat_id = chat.id
                     except Exception as e:
-                        print(f"ℹ️ Invite linkdan chat olish imkonsiz: {e}")
+                        err = str(e).lower()
+                        if "chat not found" in err:
+                            print(f"⚠️ Invite link eskirgan yoki bot a'zo emas: {identifier}")
+                        else:
+                            print(f"⚠️ Invite linkdan chat olish imkonsiz: {e}")
                         return None
                 else:
                     part = identifier.rstrip("/").split("/")[-1].split("?")[0]
@@ -274,14 +279,24 @@ async def check_telegram_membership(bot, user_id, sub_data):
 
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         return member.status in ("member", "administrator", "creator", "restricted")
+
     except Exception as e:
         msg = str(e).lower()
+
         if "chat not found" in msg:
-            print(f"⚠️ Chat topilmadi: {sub_data.get('identifier')}")
+            print(f"❌ Chat topilmadi: {sub_data.get('identifier')}")
             return None
-        if "bot is not a member" in msg or "not enough rights" in msg:
-            print(f"⚠️ Bot kanalga admin emas: {sub_data.get('identifier')}")
+        if "bot is not a member" in msg:
+            print(f"❌ Bot kanalga a'zo emas: {sub_data.get('identifier')}")
             return None
+        if "not enough rights" in msg:
+            print(f"❌ Bot kanalda admin emas: {sub_data.get('identifier')}")
+            return None
+        if "member list is inaccessible" in msg:
+            print(f"❌ 'Member list is inaccessible': {sub_data.get('identifier')} — "
+                  f"botni ADMIN qiling!")
+            return None
+
         print(f"Membership check error: {e}")
         return None
 
@@ -393,9 +408,10 @@ async def check_and_handle_mandatory_subs(update: Update, context: CallbackConte
                         await set_user_completed_sub(user_id, sub["id"], False)
                     return (sub, False)
                 else:
-                    # None — tekshirib bo'lmadi → foydalanuvchini bloklamaymiz
+                    # None — tekshirib bo'lmadi → bloklamaymiz
                     return (sub, True)
             else:
+                # ✅ Instagram/YouTube/Website — foydalanuvchi tasdiqlaganini tekshiramiz
                 return (sub, already_completed)
         except asyncio.TimeoutError:
             print(f"⚠️ Obuna timeout: {sub['identifier']}")
@@ -429,37 +445,49 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
         await start_after_subs(update, context)
         return
 
-    still_incomplete = []
-    for sub in subs:
-        if not await is_user_completed_sub(user_id, sub["id"]):
-            still_incomplete.append(sub)
+    telegram_types = ["telegram", "group", "invite"]
 
-    if not still_incomplete:
-        await query.edit_message_text("✅ Barcha kanallarga obuna bo'lgansiz!")
+    # ✅ 1-QADAM: Telegram BO'LMAGAN turlarni (Instagram/YouTube/Website) darhol mark qilamiz
+    # Chunki foydalanuvchi "✅ Obuna bo'ldim" tugmasini bosdi
+    for sub in subs:
+        if sub["type"] not in telegram_types:
+            already = await is_user_completed_sub(user_id, sub["id"])
+            if not already:
+                await mark_user_completed_sub(user_id, sub["id"])
+
+    # ✅ 2-QADAM: Telegram turlarni haqiqiy tekshiramiz
+    telegram_incomplete = []
+    for sub in subs:
+        if sub["type"] in telegram_types:
+            if not await is_user_completed_sub(user_id, sub["id"]):
+                telegram_incomplete.append(sub)
+
+    if not telegram_incomplete:
+        invalidate_mandatory_cache()
+        await query.edit_message_text(
+            "✅ Ajoyib! Barcha kanallarga obuna bo'lgansiz. Botdan foydalanishingiz mumkin!"
+        )
+        if "mandatory_msg_id" in context.user_data:
+            del context.user_data["mandatory_msg_id"]
         await start_after_subs(update, context)
         return
 
-    telegram_types = ["telegram", "group", "invite"]
-
     async def check_single_sub(sub):
         try:
-            if sub["type"] in telegram_types:
-                result = await asyncio.wait_for(
-                    check_telegram_membership(context.bot, user_id, sub),
-                    timeout=5.0
-                )
-                if result is None:
-                    return (sub, True)
-                return (sub, result)
-            else:
+            result = await asyncio.wait_for(
+                check_telegram_membership(context.bot, user_id, sub),
+                timeout=5.0
+            )
+            if result is None:
                 return (sub, True)
+            return (sub, result)
         except asyncio.TimeoutError:
             return (sub, True)
         except Exception as e:
             print(f"check_single_sub xatosi: {e}")
             return (sub, True)
 
-    results = await asyncio.gather(*[check_single_sub(sub) for sub in still_incomplete])
+    results = await asyncio.gather(*[check_single_sub(sub) for sub in telegram_incomplete])
 
     sub_positions = {s["id"]: i for i, s in enumerate(subs, start=1)}
     failed = [f"❌ {sub_positions.get(sub['id'], '?')}-kanal" for sub, is_ok in results if not is_ok]
@@ -473,7 +501,8 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
         await query.edit_message_text(msg_text, disable_web_page_preview=True)
         return
 
-    for sub in still_incomplete:
+    # ✅ Telegram turlar ham tasdiqlandi
+    for sub in telegram_incomplete:
         await mark_user_completed_sub(user_id, sub["id"])
 
     invalidate_mandatory_cache()
@@ -927,7 +956,9 @@ async def add_mandatory(update: Update, context: CallbackContext):
             "Masalan:\n"
             "/add_mandatory telegram @my_channel 5000\n"
             "/add_mandatory invite https://t.me/+abc123 1000 -1001234567890\n"
-            "/add_mandatory bot @kinobot 3000"
+            "/add_mandatory bot @kinobot 3000\n"
+            "/add_mandatory instagram https://instagram.com/kanal 5000\n"
+            "/add_mandatory youtube https://youtube.com/@kanal 5000"
         )
         return
 
@@ -1037,8 +1068,8 @@ async def handle_code(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Video yuborishda xatolik yuz berdi.")
             return
         links_msg = (
-            f"📱 Instagram: https://www.instagram.com/kino_r4ven\n"
-            f"📣 Kino kanal: @R4VEN_kino {CHANNEL_USERNAME}"
+            f"📱 Instagram: {INSTAGRAM_URL}\n"
+            f"📣 Kino kanal: {CHANNEL_USERNAME}"
         )
         await update.message.reply_text(links_msg)
         safe_task(send_ad(context.bot, user_id))
